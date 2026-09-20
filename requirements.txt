@@ -1,0 +1,4 @@
+yt-dlp>=2025.1.1
+playwright>=1.40   # 抖音浏览器兜底，另需 python -m playwright install chromium
+curl_cffi>=0.7     # 直链下载时模拟 Chrome TLS 指纹
+requests>=2.31     # curl_cffi 缺失时的降级

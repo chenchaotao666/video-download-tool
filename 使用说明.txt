@@ -1,0 +1,73 @@
+视频下载工具 使用说明
+========================
+
+【这是什么】
+粘贴抖音、B 站或腾讯视频链接，把视频下载到电脑里。
+下载的文件在本文件夹的 downloads 目录里（按 抖音/ B 站/ 腾讯 分子文件夹）。
+
+支持的视频链接：
+  抖音    分享口令整段粘贴、作品链接、收藏页复制的链接
+  B 站    bilibili.com/video/BVxxx、b23.tv 短链
+  腾讯视频  v.qq.com/x/page/xxx.html、剧集主页链接（自动下第一集）
+  优酷    v.youku.com/v_show/id_xxx.html（热门内容大多要登录，配 cookie 即可）
+  爱奇艺  iqiyi.com/v_xxx.html（VIP 内容需会员 cookie）
+
+【安装】
+不用安装任何东西。把 zip 解压到一个固定位置（比如桌面或 D 盘），
+双击 video-downloader.exe 就能用。
+注意：.exe 必须和旁边的 _internal、browsers 文件夹待在一起，
+不要把 exe 单独拖出来。
+
+
+【怎么用】
+1. 双击打开 video-downloader.exe
+2. 看到「粘贴视频链接或分享口令后回车」时，把链接粘进去，按回车
+   - 抖音 App 里点「分享 → 复制链接」得到的那一整段文字，直接整段粘贴就行
+   - 从抖音「我的收藏」页面复制的链接也可以直接用
+3. 屏幕上会列出这个视频的可选画质和大概文件大小，输入编号按回车
+   - 不知道选哪个就直接按回车，默认第 1 项
+   - 标了「H.265（慎选）」的不要用 Windows 自带播放器放，会只有声音没有画面
+   - 4K 文件可能接近 1GB 甚至更大，注意磁盘空间
+4. 下载完会继续提示粘贴下一条，可以连续下载多个视频
+5. 不想下了，直接按回车或关窗口即可
+
+注意：
+- 同一个视频下载过会提示「已下载过，跳过」。想重新下载，先去 downloads
+  文件夹里把对应文件删掉。
+- 抖音的图文帖（图片轮播）不是视频，会保存成一个图片文件夹。
+- 下载大文件时网络中断会自动续传重试，不用管。
+
+
+【关于 cookie（登录凭证文件）】
+本文件夹里如果有这几个文件，下载会更稳、清晰度更高：
+  www.douyin.com_cookies.txt      抖音
+  www.bilibili.com_cookies.txt    B 站（没有它可能只能下低清，甚至被拦）
+  v.qq.com_cookies.txt            腾讯视频（VIP/付费内容需要；免费内容不用）
+  www.youku.com_cookies.txt       优酷（热门内容大多要求登录；免费内容不用）
+  www.iqiyi.com_cookies.txt       爱奇艺（VIP/付费内容需要；免费内容不用）
+
+导出方法（cookie 大约一个月过期一次，下载总是失败时就重新导出）：
+1. 安装浏览器扩展「Get cookies.txt LOCALLY」，Chrome/Edge 直接打开这个链接安装：
+   https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc
+2. 打开并登录 bilibili.com 或 douyin.com 或 v.qq.com 或 youku.com 或 iqiyi.com
+3. 停留在该网站页面上，点扩展图标 → Export
+4. 把下载得到的 txt 文件（不用改名）复制到本文件夹
+
+注意：cookie 文件等同你的账号密码，不要发给别人。
+
+
+【遇到问题】
+- 弹出浏览器窗口让你过验证码：抖音风控，手动拖一下滑块，视频加载出来后
+  工具会自动继续下载，窗口会自动关闭。
+- B 站下载失败/只有低清：重新导出 www.bilibili.com_cookies.txt。
+- 腾讯视频提示「VIP/付费内容，只能试看」：需要在 v.qq.com 页面登录后导出
+  cookie 放进本文件夹；账号本身不是会员的话，会员视频还是下不了。
+  配好 cookie 后 VIP 内容会自动走浏览器通道（约 20 秒，清晰度可选到 1080P/4K）。
+- 优酷提示「-3007 请先登录」：在 youku.com 登录后导出 cookie 放进本文件夹。
+- 抖音反复失败：等 10~30 分钟再试；还不行就重新导出抖音 cookie。
+- 程序出错窗口会停住显示错误内容，不会自动关闭，把内容截图发给维护者。
+
+
+【声明】
+本工具仅供个人观看/技术研究使用。视频版权归原作者及平台所有，
+请勿二次分发或商用。

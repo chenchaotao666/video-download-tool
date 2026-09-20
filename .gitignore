@@ -1,0 +1,12 @@
+downloads/
+downloaded.sqlite3
+*_cookies.txt
+__pycache__/
+*.pyc
+.venv/
+weights/
+out.mp4
+bin/
+build/
+dist/
+*.spec
