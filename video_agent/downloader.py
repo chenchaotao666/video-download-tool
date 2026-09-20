@@ -195,21 +195,24 @@ _hls_ext_args_cache: list[str] | None = None
 def _hls_ext_args(ffmpeg: str) -> list[str]:
     """放开 HLS 分片扩展名白名单（爱奇艺分片是 .265ts，不在默认名单里）。
 
-    ffmpeg 6.1+ 的开关是 -extension_picky 0；更老的版本不认识这个选项
+    ffmpeg 7.0+ 才有 -extension_picky 0；老版本不认识这个选项
     （传了会直接报错退出），用 -allowed_extensions ALL 代替。
+    不解析版本号——各发行版构建的版本字符串千奇百怪，直接问 ffmpeg
+    的 HLS 解复用器帮助里有没有这个选项，探不到就按老版本处理
+    （-allowed_extensions ALL 新旧版本都认）。
     """
     global _hls_ext_args_cache
     if _hls_ext_args_cache is not None:
         return _hls_ext_args_cache
     import subprocess
-    args = ["-extension_picky", "0"]
+    args = ["-allowed_extensions", "ALL"]
     try:
-        out = subprocess.run([ffmpeg, "-version"], capture_output=True,
-                             text=True, timeout=10).stdout
-        m = re.search(r"ffmpeg version (\d+)\.(\d+)", out)
-        if m and (int(m.group(1)), int(m.group(2))) < (6, 1):
-            args = ["-allowed_extensions", "ALL"]
-    except Exception:  # noqa: BLE001 - 探测失败按新版本处理（项目自带 9.x）
+        help_text = subprocess.run(
+            [ffmpeg, "-h", "demuxer=hls"], capture_output=True,
+            text=True, errors="replace", timeout=10).stdout
+        if "extension_picky" in help_text:
+            args = ["-extension_picky", "0"]
+    except Exception:  # noqa: BLE001 - 探测失败按老版本处理，见 docstring
         pass
     _hls_ext_args_cache = args
     return args

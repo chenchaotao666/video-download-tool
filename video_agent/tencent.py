@@ -73,6 +73,13 @@ def _cookie_header() -> str:
             if old in pairs:
                 pairs.setdefault(new, pairs[old])
         if pairs:
+            # v_qq_com_session_lapse_time 是个毫秒时间戳，服务端拿它判断登录
+            # 会话是否失效。真实浏览器里站点会持续续期，但导出文件里是死值，
+            # 导出后约 1.5 小时就过期，之后 VIP 接口报 4008
+            # "missing session lapse time"。该值本身不是密钥，续期到 2 小时后
+            # 即可通过校验（实测 vinfo 由 4008 恢复为 is_vip:true）。
+            pairs["v_qq_com_session_lapse_time"] = str(
+                int((time.time() + 7200) * 1000))
             return "; ".join(f"{k}={v}" for k, v in pairs.items())
     return ""
 
