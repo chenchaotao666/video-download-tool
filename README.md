@@ -1,8 +1,8 @@
-# 抖音 / B 站 / 腾讯 / 优酷 / 爱奇艺视频下载工具
+# 抖音 / B 站 / 腾讯 / 优酷 / 爱奇艺 / YouTube 视频下载工具
 
 给一个视频链接，下载到 `downloads/<平台>/`。支持抖音（douyin.com / v.douyin.com）、
-B 站（bilibili.com / b23.tv）、腾讯视频（v.qq.com）、优酷（youku.com）和
-爱奇艺（iqiyi.com）。
+B 站（bilibili.com / b23.tv）、腾讯视频（v.qq.com）、优酷（youku.com）、
+爱奇艺（iqiyi.com）和 YouTube（youtube.com / youtu.be）。
 
 > 仅用于个人观看/技术研究。视频版权归原作者，请勿二次分发或商用。
 
@@ -104,6 +104,14 @@ gyan.dev 下载）→ PyInstaller onefile 打包（内嵌 ffmpeg 和 Playwright 
 yt-dlp 已失效的提取器——页面提取死了但接口签名还有效）拿各清晰度 m3u8，
 ffmpeg 直下 HLS。VIP 内容匿名只能试看（m3u8 带 prv 试看参数，工具会识别并提示），
 登录 cookie（`www.iqiyi.com_cookies.txt` 等）带上后返回完整播放列表。
+
+YouTube 走 yt-dlp（`video_agent/downloader.py`）。两个前置条件：
+- **代理**：YouTube 被墙，需要 Clash 等代理开着（yt-dlp 自动读 http_proxy 环境变量）
+- **JS 运行时**：YouTube 的播放地址是签名加密的，解密要 node 或 deno
+  （`winget install OpenJS.NodeJS` 装一个即可；源码运行检测到即可用，
+  exe 版需要目标机器也装有 node/deno）
+触发「Sign in to confirm you're not a bot」人机验证时，导出
+`www.youtube.com_cookies.txt` 放到旁边即可。
 
 cookie 文件名按导出时所在页面域名：`www.youku.com_cookies.txt`、`youku.com_cookies.txt`、
 `v.youku.com_cookies.txt` 都认。

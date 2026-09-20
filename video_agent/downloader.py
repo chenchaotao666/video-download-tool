@@ -63,6 +63,8 @@ _PLATFORM_COOKIES = {
     "douyin": ["www.douyin.com_cookies.txt"],
     "youku": ["www.youku.com_cookies.txt", "youku.com_cookies.txt",
               "v.youku.com_cookies.txt"],
+    # YouTube 触发"Sign in to confirm you're not a bot"时才需要
+    "youtube": ["www.youtube.com_cookies.txt", "youtube.com_cookies.txt"],
 }
 
 
@@ -279,6 +281,8 @@ def probe_ytdlp(url: str, platform: str = "bilibili") -> list[dict]:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        # YouTube 取格式也要解签名（需要 node/deno）
+        "js_runtimes": {"deno": {}, "node": {}},
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

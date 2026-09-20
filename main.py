@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""单视频下载工具：给一个抖音 / B 站 / 腾讯视频链接，下载到 downloads/<平台>/。
+"""单视频下载工具：给一个抖音 / B 站 / 腾讯视频 / 优酷 / 爱奇艺 / YouTube 链接，
+下载到 downloads/<平台>/。
 
 用法：
     python main.py "https://www.douyin.com/video/xxx"      # 抖音作品链接
     python main.py "https://v.douyin.com/xxx/"             # 抖音分享短链
     python main.py "https://www.bilibili.com/video/BVxxx"  # B 站视频
     python main.py "https://v.qq.com/x/page/xxx.html"      # 腾讯视频
+    python main.py "https://www.youtube.com/watch?v=xxx"   # YouTube（需代理 + node/deno）
     python main.py                                         # 粘贴模式：循环粘贴链接，
                                                            # 不用加引号，直接回车退出
 """
@@ -50,6 +52,8 @@ def detect_platform(url: str) -> str | None:
         return "youku"
     if "iqiyi.com" in url or "iq.com" in url:
         return "iqiyi"
+    if "youtube.com" in url or "youtu.be" in url:
+        return "youtube"
     return None
 
 
@@ -79,6 +83,12 @@ def resolve_video_id(platform: str, url: str) -> str:
         return m.group(1) if m else ""
     if platform == "iqiyi":
         m = re.search(r"[vw]_([a-z0-9]+)\.html", url)
+        return m.group(1) if m else ""
+    if platform == "youtube":
+        # watch?v= / youtu.be/ / shorts/ 三种链接形态
+        m = (re.search(r"[?&]v=([0-9A-Za-z_-]{11})", url)
+             or re.search(r"youtu\.be/([0-9A-Za-z_-]{11})", url)
+             or re.search(r"/shorts/([0-9A-Za-z_-]{11})", url))
         return m.group(1) if m else ""
     m = re.search(r"modal_id=(\d+)", url) or re.search(r"/video/(\d+)", url)
     if m:
@@ -158,7 +168,8 @@ def download_one(raw_input: str) -> bool:
     if not platform:
         print(f"[错误] 不支持的平台: {url}")
         print("只支持抖音（douyin.com / v.douyin.com）、B 站（bilibili.com / b23.tv）、"
-              "腾讯视频（v.qq.com）、优酷（youku.com）和爱奇艺（iqiyi.com）。")
+              "腾讯视频（v.qq.com）、优酷（youku.com）、爱奇艺（iqiyi.com）"
+              "和 YouTube（youtube.com / youtu.be）。")
         return False
 
     if platform == "douyin":
@@ -298,7 +309,8 @@ def download_one(raw_input: str) -> bool:
         print("[错误] 下载失败。需要登录的视频请导出 www.iqiyi.com_cookies.txt（见 README）。")
         return False
 
-    # B 站：先探测可选画质让用户挑，再按选定格式下载；探测失败按默认策略下
+    # B 站 / YouTube：走 yt-dlp。先探测可选画质让用户挑，再按选定格式下载；
+    # 探测失败按默认策略下。YouTube 解签名需要 node/deno（见 README）
     item = VideoItem(platform=platform, video_id="", title="", url=url)
     format_spec = None
     try:
@@ -311,7 +323,10 @@ def download_one(raw_input: str) -> bool:
         print(f"完成，文件在 {config.DOWNLOAD_DIR}/{platform}/")
         return True
 
-    if platform == "youku":
+    if platform == "youtube":
+        print("[错误] 下载失败。YouTube 需要代理（确认 Clash 开着且规则放行）"
+              "和 node/deno；若提示登录/人机验证，请导出 www.youtube.com_cookies.txt（见 README）。")
+    elif platform == "youku":
         print("[错误] 下载失败。需要登录的优酷视频请导出 www.youku.com_cookies.txt（见 README）。")
     else:
         print("[错误] 下载失败。B 站 412/格式不可用时，请导出 www.bilibili.com_cookies.txt（见 README）。")
@@ -353,7 +368,7 @@ def main() -> int:
         return 0 if download_one(args.url) else 1
 
     # 粘贴模式：循环接收链接，直接回车退出（exe 双击打开就是这个模式）
-    print("抖音 / B 站 / 腾讯 / 优酷 / 爱奇艺视频下载")
+    print("抖音 / B 站 / 腾讯 / 优酷 / 爱奇艺 / YouTube 视频下载")
     print(f"下载目录: {config.DOWNLOAD_DIR}")
     while True:
         try:
