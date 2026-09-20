@@ -70,25 +70,29 @@ curl -L "https://registry.npmmirror.com/-/binary/ffmpeg-static/b6.1.1/ffprobe-wi
 不好直接下），改为调 getvinfo 接口拿 vkey 签名的整段 mp4 直链；长视频分段则
 逐段下载后用 ffmpeg 无损拼接。支持剧集主页链接（自动取第一集）。
 **VIP/付费内容**匿名只能试看（CDN 会"正常"返回截断的流，工具会用 Range 探测出来
-并提示）。配好登录 cookie（`v.qq.com_cookies.txt`）后自动走浏览器通道：
-拦截播放器的 proxyhttp 播放数据（内嵌完整 HLS 列表），再用保存的请求参数按选定
-清晰度重放接口，ffmpeg 直接拉 HLS。VIP 清晰度可到 1080P/4K（以账号权限为准）。
+并提示）。配好登录 cookie（`v.qq.com_cookies.txt`）后自动走 h5vv6 getvinfo
+接口（ckey 签名）：一次请求拿到全部清晰度的 HLS(m3u8) 地址，选定画质后
+ffmpeg 直接拉流。VIP 清晰度可到 1080P/4K（以账号权限为准）。
 
 ### 重新打包（zip 免安装版）
 
 ```powershell
-.venv\Scripts\python -m pip install pyinstaller
-# 必须加 --clean，否则 PyInstaller 的缓存可能打进旧代码
-# 注意：构建会清空重建 dist\video-downloader\，里面的 downloads 会先被删掉！
-.venv\Scripts\python -m PyInstaller --noconfirm --clean --onedir --console `
-  --name video-downloader --collect-all yt_dlp --collect-all curl_cffi `
-  --collect-all playwright --add-data "bin;bin" main.py
-# 打包后把浏览器和两个 cookie 文件补进 dist\video-downloader\：
-#   browsers\  <- 复制 %LOCALAPPDATA%\ms-playwright 下的 chromium-1243 和 chromium_headless_shell-1243
-#   www.bilibili.com_cookies.txt / www.douyin.com_cookies.txt
-#   使用说明.txt
-# 最后压缩成 zip 分发：Compress-Archive dist\video-downloader dist\video-downloader.zip
+python build.py
 ```
+
+一条命令产出绿色版 `dist\`（`video-downloader.exe` + `browsers\` 浏览器），
+整个目录打 zip 分发即可，用户解压双击即用，无需任何安装。
+
+`build.py` 自动完成：安装依赖 → 准备 `bin\ffmpeg.exe`（PATH 没有就从
+gyan.dev 下载）→ PyInstaller onefile 打包（内嵌 ffmpeg 和 Playwright 驱动）
+→ 把 Chromium 装进 `dist\browsers\`（优先复用本机 `%LOCALAPPDATA%\ms-playwright`
+缓存，缺的才下载）→ 清理 `dist\` 里测试产生的 downloads（cookie 文件保留不动）。
+
+注意：
+- 需要 Windows + Python 3.10+，首次构建联网下载约 700MB（ffmpeg + Chromium）
+- 可重复运行，已下载的 ffmpeg / 浏览器自动复用
+- 打包前会自动结束正在运行的 video-downloader.exe（旧实例会锁住 exe 导致构建失败）
+- 打 zip 分发前检查 dist 里的 `*_cookies.txt`（含登录凭据），构建时脚本会提醒
 
 优酷走 `video_agent/youku.py`：调 ups.get.json 接口（ccode=0530）拿分段 mp4 直链，
 逐段下载后 ffmpeg 无损拼接。yt-dlp 自带的优酷提取器用的 ccode=0564 已被服务端

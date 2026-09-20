@@ -211,20 +211,19 @@ def download_one(raw_input: str) -> bool:
             print("   如需重新下载，请先删除这个文件。")
             return True
         if item.is_preview:
-            # VIP/付费内容：getvinfo 只给试看。有 cookie 时走浏览器通道——
-            # 拦截播放器的 proxyhttp 播放数据（一次请求），清晰度列表更全
-            # （可到 1080P/4K）。试看判定在 fetch_video 里已做，只弹这一次选择
+            # VIP/付费内容：getinfo 只给试看，改用 h5vv6 getvinfo（ckey 签名 +
+            # 登录 cookie）拿明文 vinfo，清晰度列表更全（可到 1080P/4K）。
+            # 试看判定在 fetch_video 里已做，只弹这一次选择
             if not tencent.has_cookie():
                 print("[错误] 这是 VIP/付费内容，请先导出 v.qq.com 的登录 cookie（见 README）。")
                 return False
-            print("  [提示] VIP/付费内容，改用浏览器通道获取播放数据（约 20 秒）……")
-            vip = tencent.capture_vip_hls(url)
-            if not (vip and vip["qualities"]):
-                print("[错误] 没拿到 VIP 播放数据（可能遇到验证码，稍后再试）。")
+            cid = tencent.extract_cid(url)
+            qualities = tencent.fetch_vip_qualities(item.video_id, cid, url)
+            if not qualities:
+                print("[错误] 没拿到 VIP 播放数据。请确认 cookie 未过期且账号有 VIP 权限（见 README）。")
                 return False
-            choice = choose_format(vip["qualities"])
-            m3u8 = tencent.resolve_vip_hls(vip["post_url"], vip["post_body"],
-                                           choice["defn"])
+            choice = choose_format(qualities)
+            m3u8 = tencent.resolve_vip_hls(item.video_id, cid, url, choice["defn"])
             if not m3u8:
                 print("[错误] 没拿到播放地址。")
                 return False
@@ -275,6 +274,8 @@ def download_one(raw_input: str) -> bool:
     # VIP 内容匿名只能试看（m3u8 带 prv=1 试看参数），需登录 cookie
     if platform == "iqiyi":
         from video_agent import iqiyi
+        # 移动端页面 + tmts 接口两次请求，慢网络要几秒，先给个提示免得界面像卡住
+        print("   正在解析爱奇艺视频信息……", flush=True)
         item = iqiyi.fetch_video(url)
         if not item or not item.formats:
             print("[错误] 解析失败。需要登录的视频请导出 www.iqiyi.com_cookies.txt（见 README）。")

@@ -3,6 +3,11 @@
 网页播放器用的是 fMP4 分段流（浏览器里靠 JS 内核实时拼接，不好直接下载），
 但老接口 vv.video.qq.com/getinfo 仍返回完整 mp4 的签名直链，绕开网页播放器。
 
+VIP/付费内容走 h5vv6.video.qq.com/getvinfo（ckey 签名，算法同 yt-dlp 的
+tencent 提取器）：网页播放器的 vinfo_proxy 响应已加密（enc=1），浏览器拦截
+拿不到明文；h5vv6 接口带 ckey + 登录 cookie 直接返回明文 vinfo，
+含各清晰度列表和 HLS(m3u8) 地址，不再需要浏览器通道。
+
 登录 cookie（v.qq.com_cookies.txt 或 www.qq.com_cookies.txt，浏览器扩展导出）
 存在时自动带上，可解锁更高清晰度和 VIP 内容（以账号权限为准）。
 """
@@ -10,7 +15,10 @@
 from __future__ import annotations
 
 import json
+import random
 import re
+import string
+import time
 from urllib.parse import parse_qs, urlparse
 
 import config
@@ -23,6 +31,17 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 # 扩展导出时的文件名取决于导出时所在页面，两个名字都认
 _COOKIE_FILES = ("v.qq.com_cookies.txt", "www.qq.com_cookies.txt")
+
+# v.qq.com 站点的认证 cookie 带 v_ 前缀（v_vuserid/v_vusession…），
+# 但 getinfo/getvinfo 接口只认标准名（vuserid/vusession…），不认会返回
+# login=0 匿名态，VIP 清晰度出不来。导出文件里只有前缀版，这里补一份标准名。
+_AUTH_COOKIE_RENAME = {
+    "v_vuserid": "vuserid",
+    "v_vusession": "vusession",
+    "v_t_openid": "openid",
+    "v_t_access_token": "access_token",
+    "v_t_appid": "appid",
+}
 
 
 def _http():
@@ -41,16 +60,20 @@ def _cookie_header() -> str:
         path = config.BASE_DIR / name
         if not (path.exists() and path.stat().st_size > 0):
             continue
-        pairs = []
+        pairs = {}
         for line in path.read_text(encoding="utf-8").splitlines():
             line = line.lstrip("#HttpOnly_")
             if not line.strip() or line.startswith("#"):
                 continue
             parts = line.split("\t")
             if len(parts) == 7:
-                pairs.append(f"{parts[5]}={parts[6]}")
+                pairs[parts[5]] = parts[6]
+        # 补上接口认的标准名认证 cookie（见 _AUTH_COOKIE_RENAME）
+        for old, new in _AUTH_COOKIE_RENAME.items():
+            if old in pairs:
+                pairs.setdefault(new, pairs[old])
         if pairs:
-            return "; ".join(pairs)
+            return "; ".join(f"{k}={v}" for k, v in pairs.items())
     return ""
 
 
@@ -210,82 +233,91 @@ def has_cookie() -> bool:
     return _tencent_cookie_path() is not None
 
 
-def capture_vip_hls(page_url: str) -> dict | None:
-    """VIP/付费通道：浏览器打开播放页（带登录 cookie），拦截 proxyhttp 播放数据。
+# ---- VIP/付费通道：h5vv6 getvinfo（ckey 签名，算法同 yt-dlp tencent 提取器）----
 
-    播放器的 vinfo 请求（POST vd6.l.qq.com/proxyhttp）响应里带有完整 HLS
-    播放列表（内嵌 m3u8，分段含 token），保存请求参数后可以用不同清晰度
-    重放。一次请求搞定，不用遍历播放。
+_API_V2 = "https://h5vv6.video.qq.com/getvinfo"
+_APP_VER = "3.5.57"
+_PLATFORM_V2 = "10901"
 
-    返回 {"qualities": [{label, defn}], "post_url": str, "post_body": dict}，
-    失败返回 None。
-    """
-    cookie_path = _tencent_cookie_path()
-    if not cookie_path:
-        print("  [提示] VIP 通道需要登录 cookie。")
-        return None
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as e:
-        raise RuntimeError("需要 playwright") from e
-    from .douyin_browser import _UA, _load_cookies
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True, args=["--disable-blink-features=AutomationControlled"])
-        ctx = browser.new_context(user_agent=_UA, locale="zh-CN",
-                                  viewport={"width": 1920, "height": 1080})
-        ctx.add_cookies(_load_cookies(cookie_path))
-        page = ctx.new_page()
-        try:
-            with page.expect_response(
-                    lambda r: "proxyhttp" in r.url, timeout=30000) as resp_info:
-                page.goto(page_url, wait_until="domcontentloaded", timeout=45000)
-            req = resp_info.value.request
-            vinfo = json.loads(json.loads(resp_info.value.body()
-                                          .decode("utf-8", "replace"))["vinfo"])
-            post_url, post_body = req.url, json.loads(req.post_data)
-        except Exception as e:  # noqa: BLE001
-            print(f"  [提示] 没拦截到播放数据（可能遇到验证码）: {e}")
-            return None
-        finally:
-            browser.close()
+def extract_cid(url: str) -> str:
+    """从 /x/cover/<cid>/<vid>.html 链接里取剧集 ID（cid）。"""
+    m = re.search(r"/x/cover/([a-z0-9]+)/[a-z0-9]+\.html", url)
+    return m.group(1) if m else ""
 
+
+def _get_ckey(vid: str, page_url: str, guid: str) -> str:
+    """getvinfo 的 ckey 签名（AES-CBC，密钥/算法同 yt-dlp 的 tencent 提取器）。"""
+    from yt_dlp.aes import aes_cbc_encrypt_bytes
+    payload = (f"{vid}|{int(time.time())}|mg3c3b04ba|{_APP_VER}|{guid}|"
+               f"{_PLATFORM_V2}|{page_url[:48]}|{_UA.lower()[:48]}||Mozilla|"
+               "Netscape|Windows x86_64|00|")
+    return aes_cbc_encrypt_bytes(
+        bytes(f"|{sum(map(ord, payload))}|{payload}", "utf-8"),
+        b"Ok\xda\xa3\x9e/\x8c\xb0\x7f^r-\x9e\xde\xf3\x14",
+        b"\x01PJ\xf3V\xe6\x19\xcf.B\xbb\xa6\x8c?p\xf9",
+        padding_mode="whitespace").hex().upper()
+
+
+def _getvinfo_v2(vid: str, cid: str, page_url: str, defn: str) -> dict:
+    """调 h5vv6 getvinfo：ckey 签名 + 登录 cookie，返回明文 vinfo。"""
+    guid = "".join(random.choices(string.digits + string.ascii_lowercase, k=16))
+    params = {
+        "vid": vid, "cid": cid, "cKey": _get_ckey(vid, page_url, guid),
+        "encryptVer": "8.1",
+        "sphls": "2", "dtype": "3",       # 只要 HLS(m3u8) 地址，交给 ffmpeg 下
+        "defn": defn, "spsrt": "2", "sphttps": "1", "otype": "json",
+        "spwm": "1", "hevclv": "28", "spvideo": "4", "spsfrhdr": "100",
+        "host": "v.qq.com", "referer": "v.qq.com", "ehost": page_url,
+        "appVer": _APP_VER, "platform": _PLATFORM_V2, "guid": guid,
+        "flowid": "".join(random.choices(string.digits + string.ascii_lowercase,
+                                         k=32)),
+    }
+    headers = {"User-Agent": _UA, "Referer": _REFERER}
+    cookie = _cookie_header()
+    if cookie:
+        headers["Cookie"] = cookie
+    http, kwargs = _http()
+    r = http.get(_API_V2, params=params, headers=headers, timeout=30, **kwargs)
+    t = r.text
+    if t.startswith("QZOutputJson="):
+        t = t[len("QZOutputJson="):].rstrip(";")
+    return json.loads(t)
+
+
+def fetch_vip_qualities(vid: str, cid: str, page_url: str) -> list[dict]:
+    """VIP 清晰度列表：[{label, defn, fs}]，按文件大小从高到低。"""
+    data = _getvinfo_v2(vid, cid, page_url, "hd")
+    msg = data.get("msg")
+    if msg and str(data.get("code")) not in ("0", "0.0"):
+        print(f"  [提示] 腾讯视频接口返回: {msg}")
     qualities = []
-    for f in (vinfo.get("fl") or {}).get("fi") or []:
+    for f in (data.get("fl") or {}).get("fi") or []:
         if f.get("drm"):
             continue  # DRM 流下了也播不了
         cname = (f.get("cname") or "").replace(";", " ")
         size = f.get("fs") or 0
-        label = cname
-        if size:
-            label += f" ~{size / 1048576:.0f}MB"
-        qualities.append({"label": label, "defn": f.get("name"),
-                          "fs": size})
+        label = cname + (f" ~{size / 1048576:.0f}MB" if size else "")
+        qualities.append({"label": label, "defn": f.get("name"), "fs": size})
     qualities.sort(key=lambda q: -q["fs"])
-    return {"qualities": qualities, "post_url": post_url, "post_body": post_body}
+    return qualities
 
 
-def resolve_vip_hls(post_url: str, post_body: dict, defn: str) -> str:
-    """用拦截到的播放请求参数重放 proxyhttp，换 defn 拿对应清晰度的 m3u8 地址。"""
-    body = dict(post_body)
-    vp = body.get("vinfoparam", "")
-    if re.search(r"&defn=", vp):
-        vp = re.sub(r"&defn=[^&]*", f"&defn={defn}", vp)
-    else:
-        vp += f"&defn={defn}"
-    body["vinfoparam"] = vp
-
-    http, kwargs = _http()
-    r = http.post(post_url, json=body, timeout=30, **{
-        **kwargs,
-        "headers": {"User-Agent": _UA, "Referer": _REFERER,
-                    "Cookie": _cookie_header(), "Content-Type": "application/json"},
-    })
-    vinfo = json.loads(r.json()["vinfo"])
-    vi = _vi({"vl": vinfo.get("vl")})
+def resolve_vip_hls(vid: str, cid: str, page_url: str, defn: str) -> str:
+    """按选定清晰度（defn）取 HLS(m3u8) 地址；没有 HLS 时退回 mp4 直链。"""
+    data = _getvinfo_v2(vid, cid, page_url, defn)
+    vi = _vi(data)
     if not vi:
         return ""
-    ui = (vi.get("ul") or {}).get("ui") or []
-    return ui[0].get("url", "") if ui else ""
+    ui_list = (vi.get("ul") or {}).get("ui") or []
+    for ui in ui_list:
+        url = ui.get("url") or ""
+        pt = (ui.get("hls") or {}).get("pt") or ""
+        if pt or ".m3u8" in url:
+            return url + pt
+    base = ui_list[0].get("url", "") if ui_list else ""
+    if base and vi.get("fn") and vi.get("fvkey"):
+        return f"{base}{vi['fn']}?vkey={vi['fvkey']}"
+    print("  [提示] 接口没返回播放地址（可能是 VIP/权限限制）。")
+    return ""
 

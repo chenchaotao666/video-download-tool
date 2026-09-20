@@ -2,6 +2,7 @@
 
 import re
 import shutil
+import time
 from pathlib import Path
 
 import config
@@ -11,6 +12,7 @@ from .models import VideoItem
 _REFERERS = {
     "bilibili": "https://www.bilibili.com/",
     "douyin": "https://www.douyin.com/",
+    "iqiyi": "https://www.iqiyi.com/",
     "tencent": "https://v.qq.com/",
     "youku": "https://v.youku.com/",
     "youtube": "https://www.youtube.com/",
@@ -88,6 +90,7 @@ def download(item: VideoItem, format_spec: str | None = None) -> bool:
 
 def _download_hls(item: VideoItem) -> bool:
     """HLS（m3u8）下载：ffmpeg 原生处理分段、重试和拼接。"""
+    import os
     import subprocess
 
     ffmpeg = _ffmpeg_exe()
@@ -97,19 +100,79 @@ def _download_hls(item: VideoItem) -> bool:
     outdir = config.DOWNLOAD_DIR / item.platform
     outdir.mkdir(parents=True, exist_ok=True)
     final = outdir / f"{_safe_name(item)} [{item.video_id}].mp4"
+    print(f"  开始下载 HLS: {final.name}", flush=True)
 
-    for attempt in range(1, 4):
-        proc = subprocess.run(
-            [ffmpeg, "-v", "warning", "-y",
+    # 代理策略：CDN 会按出口 IP 限速（机房 IP 常被限到 KB 级），而"走代理"
+    # 和"直连"谁快取决于平台和用户网络，没法预先知道。所以备两种环境：
+    # env_with_proxy（尊重 http_proxy 等环境变量）和 env_direct（剥离代理），
+    # 每次重试换一条路，配合下面的停滞看门狗，慢路 30 秒内就会被换掉。
+    env_with_proxy = dict(os.environ)
+    env_direct = dict(os.environ)
+    has_proxy = False
+    for k in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",
+              "all_proxy", "ALL_PROXY"):
+        if env_direct.pop(k, None):
+            has_proxy = True
+    # 有代理环境时交替尝试 [代理, 直连, 代理]；没有代理就三次都直连
+    envs = [env_with_proxy, env_direct, env_with_proxy] if has_proxy \
+        else [env_direct] * 3
+
+    for attempt, env in enumerate(envs, 1):
+        # HLS 总时长未知，进度只能显示已落盘的文件体积：后台跑 ffmpeg，
+        # 主线程轮询目标文件大小原地刷新（1 秒一次，避免刷屏）。
+        # ffmpeg 要先读完 m3u8 播放列表、拿到第一个分片才创建输出文件，
+        # 文件出现前也刷一行状态，避免慢网络下界面像卡住一样没有任何提示。
+        # 用 -v error 而非 warning：stderr 走管道，进程退出前不读，
+        # warning 量大时可能填满管道缓冲区把 ffmpeg 卡死
+        # 爱奇艺的分片是 .265ts（H.265 TS），不在 ffmpeg HLS 扩展名白名单里，
+        # 不加 _hls_ext_args 会直接拒绝下载（"not in allowed_segment_extensions"）
+        proc = subprocess.Popen(
+            [ffmpeg, "-v", "error", "-y",
+             *_hls_ext_args(ffmpeg),
              "-headers", f"Referer: {_REFERERS.get(item.platform, '')}\r\n",
              "-i", item.direct_url, "-c", "copy", str(final)],
-            capture_output=True, text=True)
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            env=env)
+        last_print = 0.0
+        # 停滞看门狗：CDN 把连接限速到几个 KB 后挂起时，ffmpeg 不会自己退出，
+        # 界面会永远停在"正在连接服务器"。输出文件 30 秒不长大就杀掉换下一条路。
+        last_size, last_growth = -1, time.monotonic()
+        stalled = False
+        while proc.poll() is None:
+            time.sleep(0.5)
+            now = time.monotonic()
+            size = final.stat().st_size if final.exists() else 0
+            if size != last_size:
+                last_size, last_growth = size, now
+            elif now - last_growth > 30:
+                proc.kill()
+                stalled = True
+                break
+            if now - last_print < 1:
+                continue
+            last_print = now
+            if final.exists():
+                print(f"\r  下载中 {final.stat().st_size / 1048576:.1f} MB",
+                      end="", flush=True)
+            else:
+                print("\r  下载中（正在连接服务器）……", end="", flush=True)
+        stderr = proc.stderr.read()
+        if final.exists():
+            # 进度行是 \r 原地刷新的，结束时补换行再打印结果
+            print(f"\r  下载中 {final.stat().st_size / 1048576:.1f} MB")
         if proc.returncode == 0:
             print(f"  [HLS 下载完成] {final.name}")
             return True
-        print(f"  [HLS 下载中断，重试 {attempt}/3] {proc.stderr.strip()[-200:]}")
+        if stalled:
+            via = "代理" if env is env_with_proxy else "直连"
+            print(f"  [连接停滞，重试 {attempt}/3] 走{via}时服务器 30 秒没有传输数据，"
+                  "换路重试。")
+        else:
+            print(f"  [HLS 下载中断，重试 {attempt}/3] {stderr.strip()[-200:]}")
     final.unlink(missing_ok=True)
     print(f"  [下载失败] {item.title}")
+    print("  [提示] 直连和代理都拿不到数据。若你的宽带出口是机房 IP（挂热点/"
+          "随身 WiFi 常见），视频站 CDN 会限速，换家庭宽带或手机流量直连再试。")
     return False
 
 
@@ -122,6 +185,32 @@ def _ffmpeg_exe() -> str | None:
         return None
     exe = Path(loc) / "ffmpeg.exe"
     return str(exe) if exe.exists() else None
+
+
+_hls_ext_args_cache: list[str] | None = None
+
+
+def _hls_ext_args(ffmpeg: str) -> list[str]:
+    """放开 HLS 分片扩展名白名单（爱奇艺分片是 .265ts，不在默认名单里）。
+
+    ffmpeg 6.1+ 的开关是 -extension_picky 0；更老的版本不认识这个选项
+    （传了会直接报错退出），用 -allowed_extensions ALL 代替。
+    """
+    global _hls_ext_args_cache
+    if _hls_ext_args_cache is not None:
+        return _hls_ext_args_cache
+    import subprocess
+    args = ["-extension_picky", "0"]
+    try:
+        out = subprocess.run([ffmpeg, "-version"], capture_output=True,
+                             text=True, timeout=10).stdout
+        m = re.search(r"ffmpeg version (\d+)\.(\d+)", out)
+        if m and (int(m.group(1)), int(m.group(2))) < (6, 1):
+            args = ["-allowed_extensions", "ALL"]
+    except Exception:  # noqa: BLE001 - 探测失败按新版本处理（项目自带 9.x）
+        pass
+    _hls_ext_args_cache = args
+    return args
 
 
 def _download_segments(item: VideoItem) -> bool:
@@ -219,7 +308,8 @@ def probe_ytdlp(url: str, platform: str = "bilibili") -> list[dict]:
         acodec = f.get("acodec") or ""
         combined = not vcodec and not acodec and f.get("url")  # 优酷：编码信息为空但有直链
         if not combined:
-            if not vcodec or vcodec == "none" or acodec == "none":
+            # 只排除纯音轨（vcodec=none）；视频轨的 acodec 本来就是 none（分轨）
+            if not vcodec or vcodec == "none":
                 continue
         w, h = f.get("width") or 0, f.get("height") or 0
         if not (w and h):
@@ -286,6 +376,14 @@ def _download_images(item: VideoItem) -> bool:
     return ok == len(item.images)
 
 
+def _progress_text(done: int, expected: int | None) -> str:
+    """进度行：有总大小显示百分比，没有就只显示已下体积。"""
+    if expected:
+        return (f"  下载中 {done / 1048576:.1f}/{expected / 1048576:.1f} MB"
+                f"（{done * 100 // expected}%）")
+    return f"  下载中 {done / 1048576:.1f} MB"
+
+
 def _fetch_to_file(http, kwargs, url: str, headers: dict, path: Path) -> bool:
     """带断点续传的流式下载：校验 Content-Length，不够就用 Range 接着下。
 
@@ -306,9 +404,19 @@ def _fetch_to_file(http, kwargs, url: str, headers: dict, path: Path) -> bool:
                     existing = 0  # 服务器没接受续传，从头下载
                 total = r.headers.get("Content-Length")
                 expected = existing + int(total) if total else None
+                done = existing
+                last_print = 0.0  # 进度刷新节流：0.2 秒一次，避免刷屏
                 with open(path, "ab" if existing else "wb") as f:
                     for chunk in r.iter_content(256 * 1024):
                         f.write(chunk)
+                        done += len(chunk)
+                        now = time.monotonic()
+                        if now - last_print >= 0.2:
+                            print(f"\r{_progress_text(done, expected)}",
+                                  end="", flush=True)
+                            last_print = now
+                # 进度行是用 \r 原地刷新的，结束时补换行，防止后续输出盖在上面
+                print(f"\r{_progress_text(done, expected)}")
             finally:
                 r.close()
             size = path.stat().st_size
@@ -326,7 +434,7 @@ def _download_direct(item: VideoItem) -> bool:
     outdir = config.DOWNLOAD_DIR / item.platform
     outdir.mkdir(parents=True, exist_ok=True)
     path = outdir / f"{_safe_name(item)} [{item.video_id}].mp4"
-
+    print(f"  开始下载: {path.name}")
     http, kwargs = _http_client()
     headers = {
         "User-Agent": (
